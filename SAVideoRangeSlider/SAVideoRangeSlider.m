@@ -25,6 +25,13 @@
 
 #import "SAVideoRangeSlider.h"
 
+
+// How many points should the left thumb be virtually extended to the left?
+#define TOUCH_PAN_LEFT_MAX_DIFF -10
+
+// How many points should the left thumb be virtually extended to the right?
+#define TOUCH_PAN_RIGHT_MAX_DIFF 30
+
 @interface SAVideoRangeSlider ()
 
 @property (nonatomic, strong) AVAssetImageGenerator *imageGenerator;
@@ -37,42 +44,47 @@
 @property (nonatomic) Float64 durationSeconds;
 @property (nonatomic, strong) SAResizibleBubble *popoverBubble;
 
+/**
+ * Variable which determines what gesture type has to be executed. Is calculated at the beginning of the UIPanRecognizer. -1 = invalid, 0 = left, 1 = right, 2 = center.
+ */
+@property (nonatomic)         int handlePanGestureType;
+
 @end
 
 @implementation SAVideoRangeSlider
 
 
-#define SLIDER_BORDERS_SIZE 6.0f
+#define SLIDER_BORDERS_SIZE 3.0f
 #define BG_VIEW_BORDERS_SIZE 3.0f
 
 
 - (id)initWithFrame:(CGRect)frame videoUrl:(NSURL *)videoUrl{
-    
+
     self = [super initWithFrame:frame];
     if (self) {
-        
+
         _frame_width = frame.size.width;
-        
+
         int thumbWidth = ceil(frame.size.width*0.05);
-        
+
         _bgView = [[UIControl alloc] initWithFrame:CGRectMake(thumbWidth-BG_VIEW_BORDERS_SIZE, 0, frame.size.width-(thumbWidth*2)+BG_VIEW_BORDERS_SIZE*2, frame.size.height)];
         _bgView.layer.borderColor = [UIColor grayColor].CGColor;
         _bgView.layer.borderWidth = BG_VIEW_BORDERS_SIZE;
         [self addSubview:_bgView];
-        
+
         _videoUrl = videoUrl;
-        
-        
+
+
         _topBorder = [[UIView alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, SLIDER_BORDERS_SIZE)];
         _topBorder.backgroundColor = [UIColor colorWithRed: 0.996 green: 0.951 blue: 0.502 alpha: 1];
         [self addSubview:_topBorder];
-        
-        
+
+
         _bottomBorder = [[UIView alloc] initWithFrame:CGRectMake(0, frame.size.height-SLIDER_BORDERS_SIZE, frame.size.width, SLIDER_BORDERS_SIZE)];
         _bottomBorder.backgroundColor = [UIColor colorWithRed: 0.992 green: 0.902 blue: 0.004 alpha: 1];
         [self addSubview:_bottomBorder];
-        
-        
+
+
         _leftThumb = [[SASliderLeft alloc] initWithFrame:CGRectMake(0, 0, thumbWidth, frame.size.height)];
         _leftThumb.contentMode = UIViewContentModeLeft;
         _leftThumb.userInteractionEnabled = YES;
@@ -80,54 +92,44 @@
         _leftThumb.backgroundColor = [UIColor clearColor];
         _leftThumb.layer.borderWidth = 0;
         [self addSubview:_leftThumb];
-        
-        
-        UIPanGestureRecognizer *leftPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleLeftPan:)];
-        [_leftThumb addGestureRecognizer:leftPan];
-        
-        
+
         _rightThumb = [[SASliderRight alloc] initWithFrame:CGRectMake(0, 0, thumbWidth, frame.size.height)];
-        
+
         _rightThumb.contentMode = UIViewContentModeRight;
         _rightThumb.userInteractionEnabled = YES;
         _rightThumb.clipsToBounds = YES;
         _rightThumb.backgroundColor = [UIColor clearColor];
         [self addSubview:_rightThumb];
-        
-        UIPanGestureRecognizer *rightPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleRightPan:)];
-        [_rightThumb addGestureRecognizer:rightPan];
-        
+
         _rightPosition = frame.size.width;
         _leftPosition = 0;
-        
-        
-        
-        
+
         _centerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, frame.size.height)];
         _centerView.backgroundColor = [UIColor clearColor];
         [self addSubview:_centerView];
-        
-        UIPanGestureRecognizer *centerPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleCenterPan:)];
-        [_centerView addGestureRecognizer:centerPan];
-        
-        
+
         _popoverBubble = [[SAResizibleBubble alloc] initWithFrame:CGRectMake(0, -50, 100, 50)];
         _popoverBubble.alpha = 0;
         _popoverBubble.backgroundColor = [UIColor clearColor];
         [self addSubview:_popoverBubble];
-        
-        
-        _bubleText = [[UILabel alloc] initWithFrame:_popoverBubble.frame];
-        _bubleText.font = [UIFont boldSystemFontOfSize:20];
-        _bubleText.backgroundColor = [UIColor clearColor];
-        _bubleText.textColor = [UIColor blackColor];
-        _bubleText.textAlignment = UITextAlignmentCenter;
-        
-        [_popoverBubble addSubview:_bubleText];
-        
+
+
+        _bubbleText = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, _popoverBubble.frame.size.width - 20, _popoverBubble.frame.size.height)];
+        _bubbleText.font = [UIFont fontWithName:@"HelveticaNeue-Medium" size:10];
+        _bubbleText.backgroundColor = [UIColor clearColor];
+        _bubbleText.textColor = [UIColor blackColor];
+        _bubbleText.textAlignment = NSTextAlignmentCenter;
+
+        [_popoverBubble addSubview:_bubbleText];
+
+        UIPanGestureRecognizer *centerPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePanGesture:)];
+        [self addGestureRecognizer:centerPan];
+
         [self getMovieFrame];
+
+        _minGap = 0.25;
     }
-    
+
     return self;
 }
 
@@ -143,17 +145,17 @@
 
 
 -(void)setPopoverBubbleSize: (CGFloat) width height:(CGFloat)height{
-    
-    CGRect currentFrame = _popoverBubble.frame;
-    currentFrame.size.width = width;
-    currentFrame.size.height = height;
-    currentFrame.origin.y = -height;
-    _popoverBubble.frame = currentFrame;
-    
-    currentFrame.origin.x = 0;
-    currentFrame.origin.y = 0;
-    _bubleText.frame = currentFrame;
-    
+    if (self.enablePopover) {
+        CGRect currentFrame = _popoverBubble.frame;
+        currentFrame.size.width = width;
+        currentFrame.size.height = height;
+        currentFrame.origin.y = -height;
+        _popoverBubble.frame = currentFrame;
+
+        currentFrame.origin.x = 0;
+        currentFrame.origin.y = 0;
+        _bubbleText.frame = _popoverBubble.frame;
+    }
 }
 
 
@@ -175,25 +177,66 @@
     if ([_delegate respondsToSelector:@selector(videoRange:didChangeLeftPosition:rightPosition:)]){
         [_delegate videoRange:self didChangeLeftPosition:self.leftPosition rightPosition:self.rightPosition];
     }
-    
+
 }
-
-
 
 
 #pragma mark - Gestures
 
+- (void)handlePanGesture:(UIPanGestureRecognizer *)gesture
+{
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        CGPoint location = [gesture locationInView:self];
+
+        int diffLeft = location.x - _leftThumb.frame.origin.x;
+        int diffRight = _rightThumb.frame.origin.x + _rightThumb.frame.size.width - location.x;
+        int diffBetween = abs(self.rightThumb.frame.origin.x - (self.leftThumb.frame.origin.x + self.leftThumb.frame.size.width*2));
+
+        if(diffBetween <= abs(TOUCH_PAN_LEFT_MAX_DIFF) + TOUCH_PAN_RIGHT_MAX_DIFF) {
+            // both virtual thumb extensions are overlapping!
+            // determine if the user touched left or right of the thumbs and control the coresponding one.
+
+            // ALTERNATIVE: Always allow to control the thumbs by touching left and right of them.
+
+            if(diffLeft < 0) {
+                self.handlePanGestureType = 0;
+            } else if(diffRight < 0) {
+                self.handlePanGestureType = 1;
+            }
+        } else {
+            // make the two thumbs virtually larger, so they can be used without hitting them 100% perfectly
+            if(diffLeft >= TOUCH_PAN_LEFT_MAX_DIFF && diffLeft <= TOUCH_PAN_RIGHT_MAX_DIFF) {
+                self.handlePanGestureType = 0;
+            } else if(diffRight >= TOUCH_PAN_LEFT_MAX_DIFF && diffRight <= TOUCH_PAN_RIGHT_MAX_DIFF) {
+                self.handlePanGestureType = 1;
+            } else if (diffLeft > TOUCH_PAN_RIGHT_MAX_DIFF && diffRight > TOUCH_PAN_RIGHT_MAX_DIFF ) {
+                self.handlePanGestureType = 2;
+            } else {
+                self.handlePanGestureType = -1; // invalid
+            }
+        }
+    }
+
+    if(self.handlePanGestureType == 0) {
+        [self handleLeftPan:gesture];
+    } else if(self.handlePanGestureType == 1) {
+        [self handleRightPan:gesture];
+    } else if(self.handlePanGestureType == 2) {
+        [self handleCenterPan:gesture];
+    }
+}
+
 - (void)handleLeftPan:(UIPanGestureRecognizer *)gesture
 {
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
-        
+
         CGPoint translation = [gesture translationInView:self];
-        
+
         _leftPosition += translation.x;
         if (_leftPosition < 0) {
             _leftPosition = 0;
         }
-        
+
         if (
             (_rightPosition-_leftPosition <= _leftThumb.frame.size.width+_rightThumb.frame.size.width) ||
             ((self.maxGap > 0) && (self.rightPosition-self.leftPosition > self.maxGap)) ||
@@ -201,21 +244,21 @@
             ){
             _leftPosition -= translation.x;
         }
-        
+
         [gesture setTranslation:CGPointZero inView:self];
-        
+
         [self setNeedsLayout];
-        
+
         [self delegateNotification];
-        
+
     }
-    
-    _popoverBubble.alpha = 1;
-    
-    [self setTimeLabel];
-    
-    if (gesture.state == UIGestureRecognizerStateEnded){
-        [self hideBubble:_popoverBubble];
+
+    if(self.enablePopover) {
+        _popoverBubble.alpha = 1;
+        [self setTimeLabel];
+        if (gesture.state == UIGestureRecognizerStateEnded){
+            [self hideBubble:_popoverBubble];
+        }
     }
 }
 
@@ -223,102 +266,101 @@
 - (void)handleRightPan:(UIPanGestureRecognizer *)gesture
 {
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
-        
-        
+
+
         CGPoint translation = [gesture translationInView:self];
         _rightPosition += translation.x;
         if (_rightPosition < 0) {
             _rightPosition = 0;
         }
-        
+
         if (_rightPosition > _frame_width){
             _rightPosition = _frame_width;
         }
-        
+
         if (_rightPosition-_leftPosition <= 0){
             _rightPosition -= translation.x;
         }
-        
+
         if ((_rightPosition-_leftPosition <= _leftThumb.frame.size.width+_rightThumb.frame.size.width) ||
             ((self.maxGap > 0) && (self.rightPosition-self.leftPosition > self.maxGap)) ||
             ((self.minGap > 0) && (self.rightPosition-self.leftPosition < self.minGap))){
             _rightPosition -= translation.x;
         }
-        
-        
+
         [gesture setTranslation:CGPointZero inView:self];
-        
+
         [self setNeedsLayout];
-        
+
         [self delegateNotification];
-        
+
     }
-    
-    _popoverBubble.alpha = 1;
-    
-    [self setTimeLabel];
-    
-    
-    if (gesture.state == UIGestureRecognizerStateEnded){
-        [self hideBubble:_popoverBubble];
+
+    if(self.enablePopover) {
+        _popoverBubble.alpha = 1;
+        [self setTimeLabel];
+        if (gesture.state == UIGestureRecognizerStateEnded){
+            [self hideBubble:_popoverBubble];
+        }
     }
 }
 
 
 - (void)handleCenterPan:(UIPanGestureRecognizer *)gesture
 {
-    
+
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
-        
+
         CGPoint translation = [gesture translationInView:self];
-        
+
         _leftPosition += translation.x;
         _rightPosition += translation.x;
-        
+
         if (_rightPosition > _frame_width || _leftPosition < 0){
             _leftPosition -= translation.x;
             _rightPosition -= translation.x;
         }
-        
-        
+
+
         [gesture setTranslation:CGPointZero inView:self];
-        
+
         [self setNeedsLayout];
-        
+
         [self delegateNotification];
-        
+
     }
-    
-    _popoverBubble.alpha = 1;
-    
-    [self setTimeLabel];
-    
-    if (gesture.state == UIGestureRecognizerStateEnded){
-        [self hideBubble:_popoverBubble];
+
+    if(self.enablePopover) {
+        _popoverBubble.alpha = 1;
+        [self setTimeLabel];
+        if (gesture.state == UIGestureRecognizerStateEnded){
+            [self hideBubble:_popoverBubble];
+        }
     }
-    
+
 }
 
 
 - (void)layoutSubviews
 {
     CGFloat inset = _leftThumb.frame.size.width / 2;
-    
+
     _leftThumb.center = CGPointMake(_leftPosition+inset, _leftThumb.frame.size.height/2);
-    
+
     _rightThumb.center = CGPointMake(_rightPosition-inset, _rightThumb.frame.size.height/2);
-    
+
     _topBorder.frame = CGRectMake(_leftThumb.frame.origin.x + _leftThumb.frame.size.width, 0, _rightThumb.frame.origin.x - _leftThumb.frame.origin.x - _leftThumb.frame.size.width/2, SLIDER_BORDERS_SIZE);
-    
+
     _bottomBorder.frame = CGRectMake(_leftThumb.frame.origin.x + _leftThumb.frame.size.width, _bgView.frame.size.height-SLIDER_BORDERS_SIZE, _rightThumb.frame.origin.x - _leftThumb.frame.origin.x - _leftThumb.frame.size.width/2, SLIDER_BORDERS_SIZE);
-    
-    
-    _centerView.frame = CGRectMake(_leftThumb.frame.origin.x + _leftThumb.frame.size.width, _centerView.frame.origin.y, _rightThumb.frame.origin.x - _leftThumb.frame.origin.x - _leftThumb.frame.size.width, _centerView.frame.size.height);
-    
-    
-    CGRect frame = _popoverBubble.frame;
-    frame.origin.x = _centerView.frame.origin.x+_centerView.frame.size.width/2-frame.size.width/2;
-    _popoverBubble.frame = frame;
+
+
+    _centerView.frame = CGRectMake(_leftThumb.frame.origin.x + _leftThumb.frame.size.width, _centerView.frame.origin.y, _rightThumb.frame.origin.x - _leftThumb.frame.origin.x - _leftThumb.frame.size.width - _leftThumb.frame.size.width, _centerView.frame.size.height);
+
+    if (self.enablePopover) {
+        CGRect frame = _popoverBubble.frame;
+        frame.origin.x = _centerView.frame.origin.x+_centerView.frame.size.width/2-frame.size.width/2;
+        _popoverBubble.frame = frame;
+    }
 }
 
 
@@ -327,18 +369,18 @@
 #pragma mark - Video
 
 -(void)getMovieFrame{
-    
+
     AVAsset *myAsset = [[AVURLAsset alloc] initWithURL:_videoUrl options:nil];
     self.imageGenerator = [AVAssetImageGenerator assetImageGeneratorWithAsset:myAsset];
-    
+
     if ([self isRetina]){
         self.imageGenerator.maximumSize = CGSizeMake(_bgView.frame.size.width*2, _bgView.frame.size.height*2);
     } else {
         self.imageGenerator.maximumSize = CGSizeMake(_bgView.frame.size.width, _bgView.frame.size.height);
     }
-    
+
     int picWidth = 49;
-    
+
     // First image
     NSError *error;
     CMTime actualTime;
@@ -355,43 +397,43 @@
         picWidth = tmp.frame.size.width;
         CGImageRelease(halfWayImage);
     }
-    
-    
+
+
     _durationSeconds = CMTimeGetSeconds([myAsset duration]);
-    
+
     int picsCnt = ceil(_bgView.frame.size.width / picWidth);
-    
+
     NSMutableArray *allTimes = [[NSMutableArray alloc] init];
-    
+
     int time4Pic = 0;
-    
+
     if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 7.0){
         // Bug iOS7 - generateCGImagesAsynchronouslyForTimes
-        
+
         for (int i=1, ii=1; i<picsCnt; i++){
             time4Pic = i*picWidth;
-            
+
             CMTime timeFrame = CMTimeMakeWithSeconds(_durationSeconds*time4Pic/_bgView.frame.size.width, 600);
-            
+
             [allTimes addObject:[NSValue valueWithCMTime:timeFrame]];
-            
-            
+
+
             CGImageRef halfWayImage = [self.imageGenerator copyCGImageAtTime:timeFrame actualTime:&actualTime error:&error];
-            
+
             UIImage *videoScreen;
             if ([self isRetina]){
                 videoScreen = [[UIImage alloc] initWithCGImage:halfWayImage scale:2.0 orientation:UIImageOrientationUp];
             } else {
                 videoScreen = [[UIImage alloc] initWithCGImage:halfWayImage];
             }
-            
-            
-            
+
+
+
             UIImageView *tmp = [[UIImageView alloc] initWithImage:videoScreen];
-            
+
             int all = (ii+1)*tmp.frame.size.width;
-            
-            
+
+
             CGRect currentFrame = tmp.frame;
             currentFrame.origin.x = ii*currentFrame.size.width;
             if (all > _bgView.frame.size.width){
@@ -400,54 +442,54 @@
             }
             tmp.frame = currentFrame;
             ii++;
-            
+
             dispatch_async(dispatch_get_main_queue(), ^{
                 [_bgView addSubview:tmp];
             });
-            
-            
-            
-            
+
+
+
+
             CGImageRelease(halfWayImage);
-            
+
         }
-        
-        
+
+
         return;
     }
-    
+
     for (int i=1; i<picsCnt; i++){
         time4Pic = i*picWidth;
-        
+
         CMTime timeFrame = CMTimeMakeWithSeconds(_durationSeconds*time4Pic/_bgView.frame.size.width, 600);
-        
+
         [allTimes addObject:[NSValue valueWithCMTime:timeFrame]];
     }
-    
+
     NSArray *times = allTimes;
-    
+
     __block int i = 1;
-    
+
     [self.imageGenerator generateCGImagesAsynchronouslyForTimes:times
                                               completionHandler:^(CMTime requestedTime, CGImageRef image, CMTime actualTime,
                                                                   AVAssetImageGeneratorResult result, NSError *error) {
-                                                  
+
                                                   if (result == AVAssetImageGeneratorSucceeded) {
-                                                      
-                                                      
+
+
                                                       UIImage *videoScreen;
                                                       if ([self isRetina]){
                                                           videoScreen = [[UIImage alloc] initWithCGImage:image scale:2.0 orientation:UIImageOrientationUp];
                                                       } else {
                                                           videoScreen = [[UIImage alloc] initWithCGImage:image];
                                                       }
-                                                      
-                                                      
+
+
                                                       UIImageView *tmp = [[UIImageView alloc] initWithImage:videoScreen];
-                                                      
+
                                                       int all = (i+1)*tmp.frame.size.width;
-                                                      
-                                                      
+
+
                                                       CGRect currentFrame = tmp.frame;
                                                       currentFrame.origin.x = i*currentFrame.size.width;
                                                       if (all > _bgView.frame.size.width){
@@ -456,13 +498,13 @@
                                                       }
                                                       tmp.frame = currentFrame;
                                                       i++;
-                                                      
+
                                                       dispatch_async(dispatch_get_main_queue(), ^{
                                                           [_bgView addSubview:tmp];
                                                       });
-                                                      
+
                                                   }
-                                                  
+
                                                   if (result == AVAssetImageGeneratorFailed) {
                                                       NSLog(@"Failed with error: %@", [error localizedDescription]);
                                                   }
@@ -479,13 +521,13 @@
 
 - (CGFloat)leftPosition
 {
-    return _leftPosition * _durationSeconds / _frame_width;
+    return (_leftPosition) / (_bgView.frame.size.width - BG_VIEW_BORDERS_SIZE*2)  * _durationSeconds;
 }
 
 
 - (CGFloat)rightPosition
 {
-    return _rightPosition * _durationSeconds / _frame_width;
+    return (_rightPosition - _rightThumb.frame.size.width - _leftThumb.frame.size.width) / (_bgView.frame.size.width - BG_VIEW_BORDERS_SIZE*2)  * _durationSeconds;
 }
 
 
@@ -499,11 +541,11 @@
                           delay:0
                         options:UIViewAnimationCurveEaseIn | UIViewAnimationOptionAllowUserInteraction
                      animations:^(void) {
-                         
+
                          _popoverBubble.alpha = 0;
                      }
                      completion:nil];
-    
+
     if ([_delegate respondsToSelector:@selector(videoRange:didGestureStateEndedLeftPosition:rightPosition:)]){
         [_delegate videoRange:self didGestureStateEndedLeftPosition:self.leftPosition rightPosition:self.rightPosition];
         
@@ -512,8 +554,8 @@
 
 
 -(void) setTimeLabel{
-    self.bubleText.text = [self trimIntervalStr];
-    //NSLog([self timeDuration1]);
+    self.bubbleText.text = [self trimIntervalStr];
+    NSLog(@"[self trimIntervalStr]=%@", [self trimIntervalStr]);
     //NSLog([self timeDuration]);
 }
 
